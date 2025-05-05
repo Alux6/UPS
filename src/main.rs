@@ -9,10 +9,17 @@ use core::panic::PanicInfo;
 pub extern "C" fn _start() -> ! {
     println!("Hello World{}", '!');
 
-    loop {}
+    ups::init(); 
+
+    x86_64::instructions::interrupts::int3();
+
+    panic!("Oh no the laptop is burning!");
+    
+    // loop {}
 }
 
 #[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
+fn panic(info: &PanicInfo) -> ! {
+    println!("{}", info);
     loop {}
 }
