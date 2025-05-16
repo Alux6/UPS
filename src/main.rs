@@ -14,23 +14,19 @@ pub extern "C" fn _start() -> ! {
 
     ups::init();
 
-    unsafe {
-        *(0xdeadbeef as *mut u8) = 42;
-    };
-
     #[cfg(test)]
     test_main();
 
-    panic!("Oh no the laptop is burning!");
+    println!("It didn't crash!");
     
-    // loop {}
+    ups::hlt_loop();
 }
 
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     println!("{}", info);
-    loop {}
+    ups::hlt_loop();
 }
 
 #[cfg(test)]
