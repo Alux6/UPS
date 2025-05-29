@@ -11,6 +11,9 @@ use core::panic::PanicInfo;
 use crate::serial::Green;
 use crate::serial::Red;
 
+extern crate alloc;
+
+pub mod allocator;
 pub mod serial;
 pub mod vga_buffer;
 

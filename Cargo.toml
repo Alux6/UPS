@@ -5,6 +5,7 @@ authors = ["Alejandro Machuca Jiménez <alux6mc@gmail.com>"]
 edition = "2024"
 
 [dependencies]
+linked_list_allocator = "0.9.0"
 bootloader = {version = "0.9", features = ["map_physical_memory"]}
 volatile = "0.2.6"
 spin = "0.5.2"

@@ -1,5 +1,5 @@
 use x86_64::{
-    structures::paging::{Page, PageTable, OffsetPageTable, PhysFrame, Mapper, Size4KiB, 
+    structures::paging::{PageTable, OffsetPageTable, PhysFrame, Size4KiB, 
         FrameAllocator},
     PhysAddr,
     VirtAddr,
@@ -83,6 +83,7 @@ unsafe impl FrameAllocator<Size4KiB> for EmptyFrameAllocator {
     }
 }
 
+/*
 pub fn create_example_mapping(
     page: Page,
     mapper: &mut OffsetPageTable,
@@ -99,6 +100,7 @@ pub fn create_example_mapping(
     };
     map_to_result.expect("map_to failed").flush();
 }
+*/
 
 unsafe impl FrameAllocator<Size4KiB> for BootInfoFrameAllocator {
     fn allocate_frame(&mut self) -> Option<PhysFrame> {
