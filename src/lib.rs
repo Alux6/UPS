@@ -8,6 +8,7 @@
 #![reexport_test_harness_main = "test_main"]
 
 use core::panic::PanicInfo;
+use alloc::vec::Vec;
 use crate::serial::Green;
 use crate::serial::Red;
 
@@ -40,6 +41,28 @@ pub fn hlt_loop() -> ! {
     loop {
         x86_64::instructions::hlt();
     }
+}
+
+pub fn str_to_fat_name(filename: &str) -> [u8; 11] {
+    let mut fat_name = [b' '; 11];
+
+    let parts: Vec<&str> = filename.split('.').collect();
+
+    if let Some(name) = parts.get(0) {
+        for (i, &b) in name.as_bytes().iter().take(8).enumerate() {
+            fat_name[i] = b.to_ascii_uppercase();
+        }
+    }
+
+    if parts.len() > 1 {
+        if let Some(ext) = parts.get(1) {
+            for (i, &b) in ext.as_bytes().iter().take(3).enumerate() {
+                fat_name[8 + i] = b.to_ascii_uppercase();
+            }
+        }
+    }
+
+    fat_name
 }
 
 pub trait Testable {

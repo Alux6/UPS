@@ -56,25 +56,20 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
     let occupied = fs.count_occupied_clusters();
     println!("Occupied clusters: {}", occupied);
-
-    fs.allocate_cluster();
-    fs.allocate_cluster();
-    fs.allocate_cluster();
+    
+    fs.create_root_dir().unwrap();
 
     let occupied = fs.count_occupied_clusters();
     println!("Occupied clusters: {}", occupied);
 
-    fs.free_cluster_chain(0x0000_0003u32).unwrap();
-    fs.free_cluster_chain(0x0000_0004u32).unwrap();
-    fs.free_cluster_chain(0x0000_0005u32).unwrap();
 
+    fs.create_file(2u32,&"Hellowo.rld").unwrap();
+    fs.create_dir(2u32,&"Hellodir").unwrap();
+        
     let occupied = fs.count_occupied_clusters();
     println!("Occupied clusters: {}", occupied);
 
-    serial_println!("BPB: {:?}", fs.bpb);
-    serial_println!("EBR: {:?}", fs.ebr);
-
-
+    fs.print_tree(2,0);
 
     #[cfg(test)]
     test_main();

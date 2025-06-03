@@ -1,8 +1,9 @@
-use bootloader::entry_point;
 use lazy_static::lazy_static;
+use ups::{str_to_fat_name};
 use alloc::vec::Vec;
 use alloc::vec;
 use spin::Mutex;
+use ups::{println, print};
 use core::{fmt};
 
 pub struct DirEntry {
@@ -76,8 +77,81 @@ pub trait BlockDevice {
     fn raw_data_mut(&mut self) -> &mut [u8];
 }
 
+impl DirEntry{
+    pub fn new(name: [u8; 11], cluster: u32, attr: u8) -> Self {
+        DirEntry {
+            name,
+            attr,
+            reserved: 0,
+            creation_time_tenths: 0,
+            creation_time: 0,
+            creation_date: 0,
+            last_access_date: 0,
+            first_cluster_high: (cluster >> 16) as u16,
+            write_time: 0,
+            write_date: 0,
+            first_cluster_low: (cluster & 0xFFFF) as u16,
+            file_size: 0,
+        }
+    }
+
+    pub fn first_cluster(&self) -> u32 {
+        ((self.first_cluster_high as u32) << 16) | (self.first_cluster_low as u32)
+    }
+
+    pub fn get_name(&self) -> Result<&str, core::str::Utf8Error> {
+        core::str::from_utf8(&self.name)
+    }
+
+    pub fn is_directory(&self) -> bool {
+        self.attr & 0x10 != 0
+    }
+
+
+    pub fn serialize(&self) -> [u8; 32] {
+        let mut buffer = [0u8; 32];
+
+        buffer[0..11].copy_from_slice(&self.name);
+
+        buffer[11] = self.attr;
+        buffer[12] = self.reserved;
+        buffer[13] = self.creation_time_tenths;
+
+        buffer[14..16].copy_from_slice(&self.creation_time.to_le_bytes());
+        buffer[16..18].copy_from_slice(&self.creation_date.to_le_bytes());
+        buffer[18..20].copy_from_slice(&self.last_access_date.to_le_bytes());
+        buffer[20..22].copy_from_slice(&self.first_cluster_high.to_le_bytes());
+        buffer[22..24].copy_from_slice(&self.write_time.to_le_bytes());
+        buffer[24..26].copy_from_slice(&self.write_date.to_le_bytes());
+        buffer[26..28].copy_from_slice(&self.first_cluster_low.to_le_bytes());
+        buffer[28..32].copy_from_slice(&self.file_size.to_le_bytes());
+
+        buffer
+    }
+
+    pub fn deserialize(data: &[u8; 32]) -> Self {
+        let mut name = [0u8; 11];
+        name.copy_from_slice(&data[0..11]);
+
+        Self {
+            name,
+            attr: data[11],
+            reserved: data[12],
+            creation_time_tenths: data[13],
+            creation_time: u16::from_le_bytes(data[14..16].try_into().unwrap()),
+            creation_date: u16::from_le_bytes(data[16..18].try_into().unwrap()),
+            last_access_date: u16::from_le_bytes(data[18..20].try_into().unwrap()),
+            first_cluster_high: u16::from_le_bytes(data[20..22].try_into().unwrap()),
+            write_time: u16::from_le_bytes(data[22..24].try_into().unwrap()),
+            write_date: u16::from_le_bytes(data[24..26].try_into().unwrap()),
+            first_cluster_low: u16::from_le_bytes(data[26..28].try_into().unwrap()),
+            file_size: u32::from_le_bytes(data[28..32].try_into().unwrap()),
+        }
+    }
+}
+
 impl<'a, D: BlockDevice> FileSystem<'a, D> {
-    fn init_fat_helper(fat_data: &mut [u8], media_descriptor: u8, root_cluster: usize) {
+    fn init_fat_helper(fat_data: &mut [u8], media_descriptor: u8) {
         fat_data.fill(0);
 
         // Entry 0: 0x0FFF_FF0 | media_descriptor
@@ -86,20 +160,6 @@ impl<'a, D: BlockDevice> FileSystem<'a, D> {
 
         // Entry 1: reserved cluster (0xFFFF_FFFF)
         fat_data[4..8].copy_from_slice(&0xFFFFFFFFu32.to_le_bytes());
-
-        // Mark the root cluster as allocated + end-of-chain (0x0FFF_FFFF)
-        let offset = root_cluster.checked_mul(4)
-            .expect("root cluster index overflow");
-        if offset + 4 <= fat_data.len() {
-            fat_data[offset..offset + 4]
-                .copy_from_slice(&0x0FFFFFFFu32.to_le_bytes());
-        } else {
-            panic!(
-                "Root cluster {} out of FAT bounds (FAT length {})",
-                root_cluster,
-                fat_data.len()
-            );
-        }
     }
 
     pub fn init_fats(&mut self) {
@@ -111,7 +171,6 @@ impl<'a, D: BlockDevice> FileSystem<'a, D> {
         };
 
         let media_descriptor = self.bpb.media_descriptor;
-        let root_cluster = self.ebr.root_cluster;
 
         let reserved = self.bpb.reserved_sectors as usize;
         let fat_size_bytes = fat_size_sectors * bytes_per_sector;
@@ -131,7 +190,7 @@ impl<'a, D: BlockDevice> FileSystem<'a, D> {
             );
 
             let fat_slice = &mut data[byte_offset..end];
-            Self::init_fat_helper(fat_slice, media_descriptor, root_cluster as usize);
+            Self::init_fat_helper(fat_slice, media_descriptor);
 
             byte_offset += fat_size_bytes;
         }
@@ -170,43 +229,53 @@ impl<'a, D: BlockDevice> FileSystem<'a, D> {
         count
     }
 
-    pub fn allocate_cluster(&mut self) -> Option<u32> {
+    fn write_fat_entry(&mut self, cluster_idx: u32, value: u32) {
         let reserved = self.bpb.reserved_sectors as usize;
         let bytes_per_sector = self.bpb.bytes_per_sector as usize;
 
         let fat_table_count = self.bpb.fat_table_count;
+        let fat_size_sectors = match self.bpb.fat_size_16 {
+            0 => self.ebr.fat_size_32 as usize,
+            n => n as usize,
+        };
+
+        let fat_bytes_len = fat_size_sectors * bytes_per_sector;
+
+        let data: &mut [u8] = self.device.raw_data_mut();
+        let first_fat_offset = reserved * bytes_per_sector;
+
+        let bytes = value.to_le_bytes();
+
+        for i in 0..fat_table_count {
+            let fat_i_offset = first_fat_offset + (i as usize * fat_bytes_len);
+            let entry_offset = fat_i_offset + (cluster_idx as usize * 4);
+            data[entry_offset..entry_offset + 4].copy_from_slice(&bytes);
+        }
+    }
+
+    pub fn allocate_cluster(&mut self) -> Option<u32> {
+        let reserved = self.bpb.reserved_sectors as usize;
+        let bytes_per_sector = self.bpb.bytes_per_sector as usize;
 
         let fat_size_sectors = match self.bpb.fat_size_16 {
             0 => self.ebr.fat_size_32 as usize,
             n => n as usize,
         };
 
-        let fat_bytes_len = fat_size_sectors as usize * bytes_per_sector as usize;
-
+        let fat_bytes_len = fat_size_sectors * bytes_per_sector;
         let data: &mut [u8] = self.device.raw_data_mut();
 
+        let first_fat_offset = reserved * bytes_per_sector;
         let num_fat_entries = fat_bytes_len / 4;
 
-        let first_fat_offset = reserved * bytes_per_sector;
-
         for cluster_idx in 2..num_fat_entries {
-            let byte_offset_in_first_fat = first_fat_offset + (cluster_idx * 4);
+            let byte_offset = first_fat_offset + (cluster_idx * 4);
+            let fat_entry = &mut data[byte_offset..byte_offset + 4];
             let entry = u32::from_le_bytes(
-                data[byte_offset_in_first_fat .. byte_offset_in_first_fat + 4]
-                    .try_into()
-                    .unwrap()
+                fat_entry.try_into().unwrap()
             );
-
             if entry == 0 {
-                let eof_marker = 0x0FFF_FFFFu32.to_le_bytes();
-
-                for i in 0..fat_table_count {
-                    let fat_i_offset = first_fat_offset + (i as usize * fat_bytes_len);
-                    let entry_offset = fat_i_offset + (cluster_idx * 4);
-                    data[entry_offset .. entry_offset + 4]
-                        .copy_from_slice(&eof_marker);
-                }
-
+                fat_entry.copy_from_slice(&0x0FFF_FFF8u32.to_le_bytes());
                 return Some(cluster_idx as u32);
             }
         }
@@ -252,23 +321,182 @@ impl<'a, D: BlockDevice> FileSystem<'a, D> {
         Ok(())
     }
 
-    fn create_root_dir(&mut self) -> Result<(), ()> {
-    // Allocate root dir cluster(s)
-    // Zero them out
-    Ok(())
+    pub fn zero_cluster_data(&mut self, cluster_idx: usize) {
+        let reserved = self.bpb.reserved_sectors as usize;
+        let bytes_per_sector = self.bpb.bytes_per_sector as usize;
+
+        let sectors_per_cluster = self.bpb.sectors_per_cluster as usize;
+        let fat_table_count = self.bpb.fat_table_count as usize;
+
+        let fat_size_sectors = match self.bpb.fat_size_16 {
+            0 => self.ebr.fat_size_32 as usize,
+            n => n as usize,
+        };
+
+        let data_start = (reserved + fat_table_count * fat_size_sectors) * bytes_per_sector;
+        let cluster_offset = (cluster_idx - 2) * sectors_per_cluster * bytes_per_sector;
+
+        let cluster_size = sectors_per_cluster * bytes_per_sector;
+
+        let start_cluster = data_start + cluster_offset;
+        let end_cluster = start_cluster + cluster_size;
+
+        let data = self.device.raw_data_mut();
+
+        for byte in &mut data[start_cluster..end_cluster] {
+            *byte = 0;
+        }
     }
 
-    /*
-    fn create_file(&mut self, parent_dir_cluster: u32, filename: &str) -> Result<(), ()> {
-    // Allocate cluster(s) for file
-    // Create directory entry in parent_dir_cluster
-    // Initialize file entry fields
-    Ok(())
+    pub fn print_tree(&mut self, cluster_idx: u32, depth: usize) {
+        let entries = self.read_dir_entries(cluster_idx as usize);
+
+        for entry in entries {
+            for _ in 0..depth {
+                print!("\\ ");
+            }
+
+            if entry.is_directory() {
+                println!("* {}", entry.get_name().unwrap().trim_end());
+
+                if entry.get_name().unwrap().trim_end() != "." && entry.get_name().unwrap().trim_end() != ".." {
+                    self.print_tree(entry.first_cluster(), depth + 1);
+                }
+
+            } else {
+                println!("* {}", entry.get_name().unwrap());
+            }
+        }
     }
-    */
+
+    pub fn allocate_dir_entry(&mut self, new_entry: DirEntry, cluster_idx: usize) -> Option<u32>{
+        let reserved = self.bpb.reserved_sectors as usize;
+        let bytes_per_sector = self.bpb.bytes_per_sector as usize;
+
+        let sectors_per_cluster = self.bpb.sectors_per_cluster as usize;
+        let fat_table_count = self.bpb.fat_table_count as usize;
+
+        let fat_size_sectors = match self.bpb.fat_size_16 {
+            0 => self.ebr.fat_size_32 as usize,
+            n => n as usize,
+        };
+
+        let data_start = (reserved + fat_table_count * fat_size_sectors) * bytes_per_sector;
+        let cluster_offset = (cluster_idx - 2) * sectors_per_cluster * bytes_per_sector;
+
+        let cluster_size = sectors_per_cluster * bytes_per_sector;
+        let entries_per_cluster = cluster_size / 32;
+
+        let start_cluster = data_start + cluster_offset;
+
+        let data = self.device.raw_data_mut();
+
+        for entry_idx in 0..entries_per_cluster {
+            let byte_offset = start_cluster + (entry_idx * 32);
+
+            let dir_slice = &mut data[byte_offset..byte_offset + 32];
+            let first_byte = dir_slice[0];
+            if first_byte == 0x00 || first_byte == 0xE5 {
+                dir_slice.copy_from_slice(&new_entry.serialize());
+                return Some(entry_idx as u32);
+            }
+        }
+
+        None
+    }
+    pub fn create_dir(&mut self, parent_dir_cluster: u32, filename: &str) -> Result<(), ()> {
+        let cluster = self.allocate_cluster().unwrap();
+
+        let entry: DirEntry = DirEntry::new(str_to_fat_name(filename), cluster, 0x10);
+
+        self.zero_cluster_data(cluster as usize);
+
+
+        let dot = DirEntry::new(*b".          ", cluster as u32, 0x10);
+        let dot2 = DirEntry::new(*b"..         ", parent_dir_cluster as u32, 0x10);
+
+        self.allocate_dir_entry(dot, cluster as usize).unwrap();
+        self.allocate_dir_entry(dot2, cluster as usize).unwrap();
+
+        self.allocate_dir_entry(entry, parent_dir_cluster as usize);
+        Ok(())
+    }
+
+    pub fn create_root_dir(&mut self) -> Result<(), ()> {
+        let root_cluster = self.ebr.root_cluster as usize;
+
+        self.zero_cluster_data(root_cluster);
+
+        let dot = DirEntry::new(*b".          ", root_cluster as u32, 0x10);
+        let dot2 = DirEntry::new(*b"..         ", root_cluster as u32, 0x10);
+
+        self.allocate_dir_entry(dot, root_cluster).unwrap();
+        self.allocate_dir_entry(dot2, root_cluster).unwrap();
+
+
+        self.write_fat_entry(root_cluster as u32, 0x0FFF_FFFFu32);
+
+        Ok(())
+    }
+
+    pub fn read_dir_entries(&mut self, cluster_idx: usize) -> Vec<DirEntry> {
+        let reserved = self.bpb.reserved_sectors as usize;
+        let bytes_per_sector = self.bpb.bytes_per_sector as usize;
+        let sectors_per_cluster = self.bpb.sectors_per_cluster as usize;
+        let fat_table_count = self.bpb.fat_table_count as usize;
+
+        let fat_size_sectors = if self.bpb.fat_size_16 == 0 {
+            self.ebr.fat_size_32 as usize
+        } else {
+            self.bpb.fat_size_16 as usize
+        };
+
+        let data_start = (reserved + fat_table_count * fat_size_sectors) * bytes_per_sector;
+
+        let cluster_offset = (cluster_idx - 2) * sectors_per_cluster * bytes_per_sector;
+
+        let start_cluster = data_start + cluster_offset;
+        let cluster_size = sectors_per_cluster * bytes_per_sector;
+
+        let data = self.device.raw_data_mut();
+
+        let entries_per_cluster = cluster_size / 32;
+
+        let mut entries = Vec::new();
+
+        for entry_idx in 0..entries_per_cluster {
+            let byte_offset = start_cluster + (entry_idx * 32);
+
+            let dir_slice = &data[byte_offset..byte_offset + 32];
+
+            let first_byte = dir_slice[0];
+
+            if first_byte == 0x00 {
+                break; // no more entries
+            }
+            if first_byte == 0xE5 {
+                continue; // deleted entry, skip
+            }
+
+            let entry = DirEntry::deserialize(dir_slice.try_into().unwrap());
+            entries.push(entry);
+        }
+        entries
+    }
+
+    pub fn create_file(&mut self, parent_dir_cluster: u32, filename: &str) -> Result<(), ()> {
+        // Allocate cluster(s) for file
+        let cluster = self.allocate_cluster().unwrap();
+        let entry: DirEntry = DirEntry::new(str_to_fat_name(filename), cluster, 0x20);
+        // Create directory entry in parent_dir_cluster
+        self.zero_cluster_data(cluster as usize);
+
+        self.allocate_dir_entry(entry, parent_dir_cluster as usize);
+        // Initialize file entry fields
+        Ok(())
+    }
 
     pub fn new(device: &'a mut D) -> Result<Self, ()> {     
-
         let mut sector = [0u8; 512];
         device.read_sector(0, &mut sector)?;
 
@@ -293,7 +521,8 @@ impl<'a, D: BlockDevice> FileSystem<'a, D> {
 }
 
 lazy_static! {
-    pub static ref BLOCK_DEVICE: Mutex<RamDisk> = {let size_in_sectors = 232;
+    pub static ref BLOCK_DEVICE: Mutex<RamDisk> = {
+        let size_in_sectors = 400;
         let sectors_per_cluster = 8;
         let reserved_sectors = 32;
         let fat_count = 2;
@@ -345,6 +574,8 @@ impl RamDisk {
             );        
         }
         let mut data = vec![0u8; size_in_sectors * 512];
+
+        println!("{}", size_in_sectors * 512);
 
         // Basic jump and OEM
         data[0] = 0xEB;
@@ -469,8 +700,21 @@ impl BlockDevice for RamDisk {
         self.data[start..end].copy_from_slice(buf);
         Ok(())
     }
+
     fn raw_data_mut(&mut self) -> &mut [u8] {
         &mut self.data[..]
+    }
+}
+
+impl fmt::Display for DirEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let cluster = ((self.first_cluster_high as u32) << 16) | (self.first_cluster_low as u32);
+
+        write!(
+            f,"DirEntry {{
+                Name: \"{}\", FC: {}
+                }}", self.get_name().unwrap(), cluster
+        )
     }
 }
 
