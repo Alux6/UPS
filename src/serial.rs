@@ -18,9 +18,9 @@ impl fmt::Display for Red {
 
 impl fmt::Display for Green {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { 
-        write!(f, "\x1B[32m")?; // prefix code
+        write!(f, "\x1B[32m")?;
         write!(f, "{}", self.0)?;
-        write!(f, "\x1B[0m")?; // postfix code
+        write!(f, "\x1B[0m")?;
         Ok(())
     }
 }
@@ -36,9 +36,9 @@ lazy_static! {
 #[doc(hidden)]
 pub fn _print(args: ::core::fmt::Arguments) {
     use core::fmt::Write;
-    use x86_64::instructions::interrupts;       // new
+    use x86_64::instructions::interrupts;
 
-    interrupts::without_interrupts(|| {         // new
+    interrupts::without_interrupts(|| {
         SERIAL1
             .lock()
             .write_fmt(args)
