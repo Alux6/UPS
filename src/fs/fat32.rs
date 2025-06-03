@@ -1,55 +1,23 @@
+use bootloader::entry_point;
 use lazy_static::lazy_static;
 use alloc::vec::Vec;
 use alloc::vec;
 use spin::Mutex;
 use core::{fmt};
 
-pub struct FileSystem<'a, D: BlockDevice> {
-    device: &'a mut D,
-    pub bpb: BiosParameterBlock,
-    pub ebr: ExtendedBootRecord32,
-    pub fat_start: u32,
-    cluster_heap_start: u32,
-    root_dir_cluster: u32,
-}
-
-pub trait BlockDevice {
-    fn read_sector(&mut self, lba: u64, buf: &mut [u8;512]) -> Result<(), ()>;
-    fn write_sector(&mut self, lba: u64, buf: &[u8;512]) -> Result<(), ()>;
-}
-
-impl<'a, D: BlockDevice> FileSystem<'a, D> {
-    pub fn new(device: &'a mut D) -> Result<Self, ()> {     
-
-        let mut sector = [0u8; 512];
-        device.read_sector(0, &mut sector)?;
-
-        let bpb = BiosParameterBlock::from_bytes(&sector[0..36])?;
-
-        let ebr = ExtendedBootRecord32::from_bytes(&sector[36..90])?;
-
-
-        let fat_start = bpb.reserved_sectors as u32;
-        let cluster_heap_start = fat_start + (ebr.fat_size_32 * bpb.fat_table_count as u32);
-        let root_dir_cluster = ebr.root_clusters;
-
-        Ok(Self {
-            device,
-            bpb,
-            ebr,
-            fat_start,
-            cluster_heap_start,
-            root_dir_cluster,
-        })
-    }
-}
-
-lazy_static! {
-    pub static ref BLOCK_DEVICE: Mutex<RamDisk> = {
-        let mut disk = RamDisk::new(16);
-        disk.init_fat32_boot_sector(16);
-        Mutex::new(disk)
-    };
+pub struct DirEntry {
+    pub name: [u8; 11],
+    pub attr: u8,
+    pub reserved: u8,
+    pub creation_time_tenths: u8,
+    pub creation_time: u16,
+    pub creation_date: u16,
+    pub last_access_date: u16,
+    pub first_cluster_high: u16,
+    pub write_time: u16,
+    pub write_date: u16,
+    pub first_cluster_low: u16,
+    pub file_size: u32,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -77,7 +45,7 @@ pub struct ExtendedBootRecord32 {
     pub fat_size_32: u32,
     pub ext_flags: u16,
     pub fat_version: u16,
-    pub root_clusters: u32,
+    pub root_cluster: u32,
     pub fs_info: u16,
     pub backup_boot: u16,
     pub _reserved: [u8; 12],
@@ -93,102 +61,345 @@ pub struct RamDisk {
     data: Vec<u8>,
 }
 
-impl RamDisk {
-    pub fn init_fat32_boot_sector(&mut self, size_in_sectors: usize) {
-        self.data.resize(size_in_sectors * 512, 0);
+pub struct FileSystem<'a, D: BlockDevice> {
+    device: &'a mut D,
+    pub bpb: BiosParameterBlock,
+    pub ebr: ExtendedBootRecord32,
+    pub fat_start: u32,
+    cluster_heap_start: u32,
+    root_dir_cluster: u32,
+}
 
-        let data = &mut self.data;
+pub trait BlockDevice {
+    fn read_sector(&mut self, lba: u64, buf: &mut [u8;512]) -> Result<(), ()>;
+    fn write_sector(&mut self, lba: u64, buf: &[u8;512]) -> Result<(), ()>;
+    fn raw_data_mut(&mut self) -> &mut [u8];
+}
 
-        data[0] = 0xEB; // JMP short
-        data[1] = 0x58; // JMP offset
-        data[2] = 0x90; // NOP
+impl<'a, D: BlockDevice> FileSystem<'a, D> {
+    fn init_fat_helper(fat_data: &mut [u8], media_descriptor: u8, root_cluster: usize) {
+        fat_data.fill(0);
 
-        // OEM Name (8 bytes)
-        let oem = b"MSWIN4.1";
-        data[3..11].copy_from_slice(oem);
+        // Entry 0: 0x0FFF_FF0 | media_descriptor
+        let entry0 = 0x0FFFFFF0u32 | (media_descriptor as u32);
+        fat_data[0..4].copy_from_slice(&entry0.to_le_bytes());
 
-        // Bytes per sector (2 bytes) = 512
-        data[11..13].copy_from_slice(&512u16.to_le_bytes());
+        // Entry 1: reserved cluster (0xFFFF_FFFF)
+        fat_data[4..8].copy_from_slice(&0xFFFFFFFFu32.to_le_bytes());
 
-        // Sectors per cluster (1 byte) = 8
-        data[13] = 8;
-
-        // Reserved sectors (2 bytes) = 32
-        data[14..16].copy_from_slice(&32u16.to_le_bytes());
-
-        // Number of FATs (1 byte) = 2
-        data[16] = 2;
-
-        // Root entries (2 bytes) = 0
-        data[17..19].copy_from_slice(&0u16.to_le_bytes());
-
-        // Total sectors 16 (2 bytes) = 0 (use 32-bit total sectors)
-        data[19..21].copy_from_slice(&0u16.to_le_bytes());
-
-        // Media descriptor (1 byte)
-        data[21] = 0xF8;
-
-        // FAT size 16 (2 bytes) = 0 (use 32-bit fat size)
-        data[22..24].copy_from_slice(&0u16.to_le_bytes());
-
-        // Sectors per track (2 bytes) = 63
-        data[24..26].copy_from_slice(&63u16.to_le_bytes());
-
-        // Number of heads (2 bytes) = 255
-        data[26..28].copy_from_slice(&255u16.to_le_bytes());
-
-        // Hidden sectors (4 bytes) = 0
-        data[28..32].copy_from_slice(&0u32.to_le_bytes());
-
-        // Total sectors 32 (4 bytes)
-        data[32..36].copy_from_slice(&(size_in_sectors as u32).to_le_bytes());
-
-        // FAT size 32 (4 bytes) = 100 sectors per FAT (example)
-        data[36..40].copy_from_slice(&100u32.to_le_bytes());
-
-        // Extended Boot Record starts at offset 0x24 (36 decimal), so continue filling:
-        // Ext flags (2 bytes) = 0
-        data[40..42].copy_from_slice(&0u16.to_le_bytes());
-
-        // FAT version (2 bytes) = 0
-        data[42..44].copy_from_slice(&0u16.to_le_bytes());
-
-        // Root cluster (4 bytes) = 2
-        data[44..48].copy_from_slice(&2u32.to_le_bytes());
-
-        // FS info sector (2 bytes) = 1
-        data[48..50].copy_from_slice(&1u16.to_le_bytes());
-
-        // Backup boot sector (2 bytes) = 6
-        data[50..52].copy_from_slice(&6u16.to_le_bytes());
-
-        // Drive number (1 byte)
-        data[64] = 0x80;
-
-        // Signature (1 byte)
-        data[66] = 0x29;
-
-        // Volume ID (4 bytes)
-        data[67..71].copy_from_slice(&0x12345678u32.to_le_bytes());
-
-        // Volume Label (11 bytes)
-        let label = b"NO NAME    ";
-        data[71..82].copy_from_slice(label);
-
-        // File system type (8 bytes)
-        let fs_type = b"FAT32   ";
-        data[82..90].copy_from_slice(fs_type);
-
-        // Boot signature (2 bytes) at offset 510-511
-        data[510] = 0x55;
-        data[511] = 0xAA;
-    }
-    pub fn new(size_in_sectors: usize) -> Self {
-        RamDisk {
-            data: vec![0; size_in_sectors * 512],
+        // Mark the root cluster as allocated + end-of-chain (0x0FFF_FFFF)
+        let offset = root_cluster.checked_mul(4)
+            .expect("root cluster index overflow");
+        if offset + 4 <= fat_data.len() {
+            fat_data[offset..offset + 4]
+                .copy_from_slice(&0x0FFFFFFFu32.to_le_bytes());
+        } else {
+            panic!(
+                "Root cluster {} out of FAT bounds (FAT length {})",
+                root_cluster,
+                fat_data.len()
+            );
         }
     }
+
+    pub fn init_fats(&mut self) {
+        let bytes_per_sector = self.bpb.bytes_per_sector as usize;
+
+        let fat_size_sectors = match self.bpb.fat_size_16 {
+            0 => self.ebr.fat_size_32 as usize,
+            n => n as usize,
+        };
+
+        let media_descriptor = self.bpb.media_descriptor;
+        let root_cluster = self.ebr.root_cluster;
+
+        let reserved = self.bpb.reserved_sectors as usize;
+        let fat_size_bytes = fat_size_sectors * bytes_per_sector;
+
+        let data = self.device.raw_data_mut();
+
+        let mut byte_offset = reserved * bytes_per_sector;
+
+        for i in 0..self.bpb.fat_table_count as usize {
+            let end = byte_offset + fat_size_bytes;
+            assert!(
+                end <= data.len(),
+                "FAT copy {} out of disk bounds (offset {} len {})",
+                i,
+                byte_offset,
+                fat_size_bytes
+            );
+
+            let fat_slice = &mut data[byte_offset..end];
+            Self::init_fat_helper(fat_slice, media_descriptor, root_cluster as usize);
+
+            byte_offset += fat_size_bytes;
+        }
+    }
+
+    pub fn count_occupied_clusters(&mut self) -> usize {
+        let reserved = self.bpb.reserved_sectors as usize;
+        let bytes_per_sector = self.bpb.bytes_per_sector as usize;
+
+        let fat_size_sectors = match self.bpb.fat_size_16 {
+            0 => self.ebr.fat_size_32 as usize,
+            n => n as usize,
+        };
+        let fat_bytes_len = fat_size_sectors * bytes_per_sector;
+
+        let disk_bytes: &mut [u8] = self.device.raw_data_mut();
+
+        let fat_start_byte = reserved * bytes_per_sector;
+
+        let fat_slice = &disk_bytes[fat_start_byte .. fat_start_byte + fat_bytes_len];
+
+        // 5) Iterate over each 4-byte entry and count nonzero values:
+        let mut count = 0;
+        for idx in (0 .. fat_slice.len()).step_by(4) {
+            // Read one u32 in little-endian:
+            let entry = u32::from_le_bytes(
+                fat_slice[idx .. idx + 4]
+                    .try_into()
+                    .unwrap()
+            );
+            if entry != 0 {
+                count += 1;
+            }
+        }
+
+        count
+    }
+
+    pub fn allocate_cluster(&mut self) -> Option<u32> {
+        let reserved = self.bpb.reserved_sectors as usize;
+        let bytes_per_sector = self.bpb.bytes_per_sector as usize;
+
+        let fat_table_count = self.bpb.fat_table_count;
+
+        let fat_size_sectors = match self.bpb.fat_size_16 {
+            0 => self.ebr.fat_size_32 as usize,
+            n => n as usize,
+        };
+
+        let fat_bytes_len = fat_size_sectors as usize * bytes_per_sector as usize;
+
+        let data: &mut [u8] = self.device.raw_data_mut();
+
+        let num_fat_entries = fat_bytes_len / 4;
+
+        let first_fat_offset = reserved * bytes_per_sector;
+
+        for cluster_idx in 2..num_fat_entries {
+            let byte_offset_in_first_fat = first_fat_offset + (cluster_idx * 4);
+            let entry = u32::from_le_bytes(
+                data[byte_offset_in_first_fat .. byte_offset_in_first_fat + 4]
+                    .try_into()
+                    .unwrap()
+            );
+
+            if entry == 0 {
+                let eof_marker = 0x0FFF_FFFFu32.to_le_bytes();
+
+                for i in 0..fat_table_count {
+                    let fat_i_offset = first_fat_offset + (i as usize * fat_bytes_len);
+                    let entry_offset = fat_i_offset + (cluster_idx * 4);
+                    data[entry_offset .. entry_offset + 4]
+                        .copy_from_slice(&eof_marker);
+                }
+
+                return Some(cluster_idx as u32);
+            }
+        }
+
+        None
+    }
+
+    pub fn free_cluster_chain(&mut self, start_cluster: u32) -> Result<(), ()> {
+        let reserved = self.bpb.reserved_sectors as usize;
+        let bytes_per_sector = self.bpb.bytes_per_sector as usize;
+
+        let fat_size_sectors = match self.bpb.fat_size_16 {
+            0 => self.ebr.fat_size_32 as usize,
+            n => n as usize,
+        };
+
+        let first_fat_offset = reserved * bytes_per_sector;
+
+        let fat_bytes_len = fat_size_sectors * bytes_per_sector;
+        let fat_table_count = self.bpb.fat_table_count;
+        let data = self.device.raw_data_mut();
+
+
+        let mut current_cluster = start_cluster;
+
+        while current_cluster < 0x0FFF_FFF8 {
+            let next_cluster = {
+                let fat_offset = first_fat_offset + (current_cluster as usize * 4);
+                let entry = u32::from_le_bytes(
+                    data[fat_offset..fat_offset+4].try_into().unwrap()
+                );
+                entry
+            };
+
+            for i in 0..fat_table_count {
+                let fat_offset = first_fat_offset + (i as usize * fat_bytes_len);
+                let entry_offset = fat_offset + (current_cluster as usize * 4);
+                data[entry_offset..entry_offset+4].copy_from_slice(&0u32.to_le_bytes());
+            }
+
+            current_cluster = next_cluster;
+        }
+        Ok(())
+    }
+
+    fn create_root_dir(&mut self) -> Result<(), ()> {
+    // Allocate root dir cluster(s)
+    // Zero them out
+    Ok(())
+    }
+
+    /*
+    fn create_file(&mut self, parent_dir_cluster: u32, filename: &str) -> Result<(), ()> {
+    // Allocate cluster(s) for file
+    // Create directory entry in parent_dir_cluster
+    // Initialize file entry fields
+    Ok(())
+    }
+    */
+
+    pub fn new(device: &'a mut D) -> Result<Self, ()> {     
+
+        let mut sector = [0u8; 512];
+        device.read_sector(0, &mut sector)?;
+
+        let bpb = BiosParameterBlock::from_bytes(&sector[0..36])?;
+
+        let ebr = ExtendedBootRecord32::from_bytes(&sector[36..90])?;
+
+
+        let fat_start = bpb.reserved_sectors as u32;
+        let cluster_heap_start = fat_start + (ebr.fat_size_32 * bpb.fat_table_count as u32);
+        let root_dir_cluster = ebr.root_cluster;
+
+        Ok(Self {
+            device,
+            bpb,
+            ebr,
+            fat_start,
+            cluster_heap_start,
+            root_dir_cluster,
+        })
+    }
 }
+
+lazy_static! {
+    pub static ref BLOCK_DEVICE: Mutex<RamDisk> = {let size_in_sectors = 232;
+        let sectors_per_cluster = 8;
+        let reserved_sectors = 32;
+        let fat_count = 2;
+        let fat_size = 100;
+        let root_cluster = 2;
+        let fs_info_sector = 1;
+        let backup_boot_sector = 6;
+        let volume_id = 0x12345678;
+        let volume_label = *b"NO NAME    ";
+
+        let disk = RamDisk::new(
+            size_in_sectors,
+            sectors_per_cluster,
+            reserved_sectors,
+            fat_count,
+            fat_size,
+            root_cluster,
+            fs_info_sector,
+            backup_boot_sector,
+            volume_id,
+            volume_label,
+        );
+
+        Mutex::new(disk)
+    };
+}
+
+
+impl RamDisk {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        size_in_sectors: usize,
+        sectors_per_cluster: u8,
+        reserved_sectors: u16,
+        fat_count: u8,
+        fat_size: u32,
+        root_cluster: u32,
+        fs_info_sector: u16,
+        backup_boot_sector: u16,
+        volume_id: u32,
+        volume_label: [u8; 11],
+    ) -> Self {
+
+        let total_sectors = reserved_sectors as usize + (fat_count as usize * fat_size as usize);
+        if total_sectors > size_in_sectors {
+            panic!(
+                "Provided size_in_sectors ({}) is too small; at least {} sectors are required to fit reserved + FAT + data regions.",
+                size_in_sectors, total_sectors
+            );        
+        }
+        let mut data = vec![0u8; size_in_sectors * 512];
+
+        // Basic jump and OEM
+        data[0] = 0xEB;
+        data[1] = 0x58;
+        data[2] = 0x90;
+        data[3..11].copy_from_slice(b"MSWIN4.1");
+
+        // BIOS Parameter Block
+        data[11..13].copy_from_slice(&512u16.to_le_bytes()); // bytes/sector
+        data[13] = sectors_per_cluster;
+        data[14..16].copy_from_slice(&reserved_sectors.to_le_bytes());
+        data[16] = fat_count;
+        data[17..19].copy_from_slice(&0u16.to_le_bytes()); // root entries
+        //
+        data[19..21].copy_from_slice(&(if size_in_sectors < 65536 {
+            size_in_sectors as u16} else {0}).to_le_bytes());
+
+        data[21] = 0xF8; // media descriptor
+        data[22..24].copy_from_slice(&0u16.to_le_bytes()); // fat_size_16
+        data[24..26].copy_from_slice(&63u16.to_le_bytes()); // sectors/track
+        data[26..28].copy_from_slice(&255u16.to_le_bytes()); // heads
+        data[28..32].copy_from_slice(&0u32.to_le_bytes()); // hidden sectors
+        data[32..36].copy_from_slice(&(if size_in_sectors >= 65536 {
+            size_in_sectors as u32
+        } else {
+                0
+            })
+            .to_le_bytes());
+
+        // Extended Boot Record
+        data[36..40].copy_from_slice(&fat_size.to_le_bytes());
+        data[40..42].copy_from_slice(&0u16.to_le_bytes()); // ext flags
+        data[42..44].copy_from_slice(&0u16.to_le_bytes()); // fat version
+        data[44..48].copy_from_slice(&root_cluster.to_le_bytes());
+        data[48..50].copy_from_slice(&fs_info_sector.to_le_bytes());
+        data[50..52].copy_from_slice(&backup_boot_sector.to_le_bytes());
+
+        // Reserved (12 bytes): zeroed
+
+        // Drive/boot fields
+        data[64] = 0x80;
+        data[65] = 0x00; // Windows NT flags
+        data[66] = 0x29; // signature
+        data[67..71].copy_from_slice(&volume_id.to_le_bytes());
+        data[71..82].copy_from_slice(&volume_label);
+        data[82..90].copy_from_slice(b"FAT32   ");
+
+        // Boot sector signature
+        data[510] = 0x55;
+        data[511] = 0xAA;
+
+        Self { data }
+    }
+}
+
 
 impl BiosParameterBlock {
     pub fn from_bytes(buf: &[u8]) -> Result<Self, ()> {
@@ -224,7 +435,7 @@ impl ExtendedBootRecord32 {
             fat_size_32: u32::from_le_bytes(buf[0..4].try_into().unwrap()),
             ext_flags: u16::from_le_bytes(buf[4..6].try_into().unwrap()),
             fat_version: u16::from_le_bytes(buf[6..8].try_into().unwrap()),
-            root_clusters: u32::from_le_bytes(buf[8..12].try_into().unwrap()),
+            root_cluster: u32::from_le_bytes(buf[8..12].try_into().unwrap()),
             fs_info: u16::from_le_bytes(buf[12..14].try_into().unwrap()),
             backup_boot: u16::from_le_bytes(buf[14..16].try_into().unwrap()),
             _reserved: buf[16..28].try_into().unwrap(),
@@ -258,6 +469,9 @@ impl BlockDevice for RamDisk {
         self.data[start..end].copy_from_slice(buf);
         Ok(())
     }
+    fn raw_data_mut(&mut self) -> &mut [u8] {
+        &mut self.data[..]
+    }
 }
 
 impl fmt::Display for BiosParameterBlock {
@@ -269,20 +483,20 @@ impl fmt::Display for BiosParameterBlock {
         write!(
             f,
             "BiosParameterBlock {{
-    JMP: {:02X?}
-    OEM: {}
-    Bytes per sector: {}
-    Sectors per cluster: {}
-    Reserved sectors: {}
-    FAT table count: {}
-    Root entries: {}
-    Total sectors 16: {}
-    Media descriptor: 0x{:02X}
-    FAT size 16: {}
-    Sectors per track: {}
-    Heads on media: {}
-    Hidden sectors: {}
-    Total sectors 32: {}
+JMP: {:02X?}
+OEM: {}
+Bytes per sector: {}
+Sectors per cluster: {}
+Reserved sectors: {}
+FAT table count: {}
+Root entries: {}
+Total sectors 16: {}
+Media descriptor: 0x{:02X}
+FAT size 16: {}
+Sectors per track: {}
+Heads on media: {}
+Hidden sectors: {}
+Total sectors 32: {}
 }}",
             &self._jmp,
             oem_str,
@@ -312,22 +526,22 @@ impl fmt::Display for ExtendedBootRecord32 {
         write!(
             f,
             "ExtendedBootRecord32 {{
-    FAT size 32: {}
-    Ext flags: {}
-    FAT version: {}
-    Root cluster: {}
-    FS info sector: {}
-    Backup boot sector: {}
-    Drive number: {}
-    Signature: 0x{:02X}
-    Volume ID: 0x{:08X}
-    Volume Label: {}
-    FS ID: {}
+FAT size 32: {}
+Ext flags: {}
+FAT version: {}
+Root cluster: {}
+FS info sector: {}
+Backup boot sector: {}
+Drive number: {}
+Signature: 0x{:02X}
+Volume ID: 0x{:08X}
+Volume Label: {}
+FS ID: {}
 }}",
             self.fat_size_32,
             self.ext_flags,
             self.fat_version,
-            self.root_clusters,
+            self.root_cluster,
             self.fs_info,
             self.backup_boot,
             self.drive_number,

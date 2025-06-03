@@ -38,16 +38,43 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     allocator::init_heap(&mut mapper, &mut frame_allocator)
         .expect("heap initialization failed");
 
+    println!("Heap size: {} MB", allocator::HEAP_SIZE / 1024 / 1024);
+
 
     let mut block_device = BLOCK_DEVICE.lock();
 
     // Create the filesystem using the locked &mut RamDisk
-    let fs = FileSystem::new(&mut *block_device).expect("Failed to create FS");
-
+    let mut fs = FileSystem::new(&mut *block_device).expect("Failed to create FS");
+    
     println!("FAT starts at sector {}", fs.fat_start);
+
+    let occupied = fs.count_occupied_clusters();
+    println!("Occupied clusters: {}", occupied);
+
+    fs.init_fats();
+    println!("FAT was just set up");
+
+    let occupied = fs.count_occupied_clusters();
+    println!("Occupied clusters: {}", occupied);
+
+    fs.allocate_cluster();
+    fs.allocate_cluster();
+    fs.allocate_cluster();
+
+    let occupied = fs.count_occupied_clusters();
+    println!("Occupied clusters: {}", occupied);
+
+    fs.free_cluster_chain(0x0000_0003u32).unwrap();
+    fs.free_cluster_chain(0x0000_0004u32).unwrap();
+    fs.free_cluster_chain(0x0000_0005u32).unwrap();
+
+    let occupied = fs.count_occupied_clusters();
+    println!("Occupied clusters: {}", occupied);
 
     serial_println!("BPB: {:?}", fs.bpb);
     serial_println!("EBR: {:?}", fs.ebr);
+
+
 
     #[cfg(test)]
     test_main();

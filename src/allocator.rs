@@ -8,7 +8,7 @@ use linked_list_allocator::LockedHeap;
 pub struct Dummy;
 
 pub const HEAP_START: usize = 0x_4444_4444_0000;
-pub const HEAP_SIZE: usize = 100 * 1024;
+pub const HEAP_SIZE: usize = 10 * 1024 * 1024;
 
 pub fn init_heap(
     mapper: &mut impl Mapper<Size4KiB>,
