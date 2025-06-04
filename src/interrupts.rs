@@ -3,9 +3,11 @@ use crate::println;
 use crate::print;
 
 
-
+use alloc::string::String;
 use lazy_static::lazy_static;
 use crate::gdt;
+use crate::shell::TERMINAL;
+use crate::vga_buffer::WRITER;
 
 use pic8259::ChainedPics;
 use spin;
@@ -27,13 +29,29 @@ pub enum InterruptIndex {
     Keyboard,
 }
 
+pub fn mask_irq1() {
+    unsafe {
+        let mut port = x86_64::instructions::port::Port::new(0x21);
+        let mask: u8 = port.read();
+        port.write(mask | 0x02); // Set bit 1 to mask IRQ1 (keyboard)
+    }
+}
+
+pub fn unmask_irq1() {
+    unsafe {
+        let mut port = x86_64::instructions::port::Port::new(0x21);
+        let mask: u8 = port.read();
+        port.write(mask & !0x02); // Clear bit 1 to unmask IRQ1
+    }
+}
+
 impl InterruptIndex {
     fn as_u8(self) -> u8 {
         self as u8
     }
     /*
     fn as_usize(self) -> usize {
-        usize::from(self.as_u8())
+    usize::from(self.as_u8())
     }
     */
 }
@@ -47,7 +65,7 @@ lazy_static! {
         unsafe {
             idt.double_fault.set_handler_fn(double_fault_handler)
                 .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
-            }
+        }
         idt[InterruptIndex::Timer.as_u8()]
             .set_handler_fn(timer_interrupt_handler);
         idt[InterruptIndex::Keyboard.as_u8()]
@@ -78,9 +96,9 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(
 
     lazy_static! {
         static ref KEYBOARD: Mutex<Keyboard<layouts::Us104Key, ScancodeSet1>> =
-            Mutex::new(Keyboard::new(ScancodeSet1::new(),
+        Mutex::new(Keyboard::new(ScancodeSet1::new(),
             layouts::Us104Key, HandleControl::Ignore)
-            );
+        );
     }
 
 
@@ -91,7 +109,19 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(
     if let Ok(Some(key_event)) = keyboard.add_byte(scancode) {
         if let Some(decoded) = keyboard.process_keyevent(key_event) {
             if let DecodedKey::Unicode(character) = decoded {
-                print!("{}", character);
+                let byte = character as u8; 
+                let mut term = TERMINAL.lock();
+                if character == '\u{8}' {
+                    term.pop_char();
+                    WRITER.lock().delete_byte();
+                }
+                else{
+                    let mut result: String = term.push_char(byte);
+                    if character == '\n' || character == '\r' {
+                        result = term.execute_command();
+                    }
+                    print!("{}", result);
+                }
             }
         }
     }
@@ -108,7 +138,7 @@ extern "x86-interrupt" fn timer_interrupt_handler(
     unsafe {
         PICS.lock()
             .notify_end_of_interrupt(InterruptIndex::Timer.as_u8());
-        }
+    }
 }
 
 

@@ -18,6 +18,10 @@ pub mod allocator;
 pub mod serial;
 pub mod vga_buffer;
 
+
+pub mod fs;
+pub mod shell;
+
 pub mod gdt;
 
 pub mod interrupts;

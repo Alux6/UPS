@@ -7,12 +7,12 @@
 
 extern crate alloc;
 
-mod fs;
-
-use crate::fs::fat32::{BLOCK_DEVICE, FileSystem};
+use ups::fs::fat32::{BLOCK_DEVICE, FileSystem};
+use ups::shell;
+use ups::interrupts;
 
 use core::panic::PanicInfo;
-use ups::{allocator, println, serial_println};
+use ups::{allocator, println};
 
 use bootloader::{BootInfo, entry_point};
 
@@ -21,6 +21,8 @@ entry_point!(kernel_main);
 #[unsafe(no_mangle)]
 fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
+    interrupts::mask_irq1();
+        
     use x86_64::{VirtAddr};
     use ups::memory::{self,
         BootInfoFrameAllocator,
@@ -40,36 +42,39 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
     println!("Heap size: {} MB", allocator::HEAP_SIZE / 1024 / 1024);
 
+    {
+        let mut block_device = BLOCK_DEVICE.lock();
 
-    let mut block_device = BLOCK_DEVICE.lock();
+        // Create the filesystem using the locked &mut RamDisk
+        let mut fs = FileSystem::new(&mut *block_device).expect("Failed to create FS");
 
-    // Create the filesystem using the locked &mut RamDisk
-    let mut fs = FileSystem::new(&mut *block_device).expect("Failed to create FS");
-    
-    println!("FAT starts at sector {}", fs.fat_start);
+        println!("FAT starts at sector {}", fs.fat_start);
 
-    let occupied = fs.count_occupied_clusters();
-    println!("Occupied clusters: {}", occupied);
+        let occupied = fs.count_occupied_clusters();
+        println!("Occupied clusters: {}", occupied);
 
-    fs.init_fats();
-    println!("FAT was just set up");
+        fs.init_fats();
+        println!("FAT was just set up");
 
-    let occupied = fs.count_occupied_clusters();
-    println!("Occupied clusters: {}", occupied);
-    
-    fs.create_root_dir().unwrap();
+        let occupied = fs.count_occupied_clusters();
+        println!("Occupied clusters: {}", occupied);
 
-    let occupied = fs.count_occupied_clusters();
-    println!("Occupied clusters: {}", occupied);
+        fs.create_root_dir().unwrap();
+
+        let occupied = fs.count_occupied_clusters();
+        println!("Occupied clusters: {}", occupied);
 
 
-    fs.create_file(2u32,&"Hellowo.rld").unwrap();
-    fs.create_dir(2u32,&"Hellodir").unwrap();
-        
-    let occupied = fs.count_occupied_clusters();
-    println!("Occupied clusters: {}", occupied);
+        fs.create_file(2u32,&"Hellowo.rld").unwrap();
+        fs.create_dir(2u32,&"Hellodir").unwrap();
 
-    fs.print_tree(2,0);
+        let occupied = fs.count_occupied_clusters();
+        println!("Occupied clusters: {}", occupied);
+    }
+
+    shell::init();
+
+    interrupts::unmask_irq1();
 
     #[cfg(test)]
     test_main();

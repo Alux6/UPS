@@ -85,6 +85,23 @@ impl Writer {
         }
     }
 
+    pub fn delete_byte(&mut self) {
+        if self.column_position != 0 {
+
+            self.column_position -= 1;
+
+            let row = BUFFER_HEIGHT - 1;
+            let col = self.column_position;
+
+            let blank = ScreenChar {
+                ascii_character: b' ',
+                color_code: self.color_code,
+            };
+
+            self.buffer.chars[row][col].write(blank);
+        }
+    }
+
     fn new_line(&mut self) {
         for row in 1..BUFFER_HEIGHT {
             for col in 0..BUFFER_WIDTH {

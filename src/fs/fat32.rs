@@ -1,9 +1,16 @@
 use lazy_static::lazy_static;
-use ups::{str_to_fat_name};
+use crate::{str_to_fat_name};
+
+use core::fmt::Write;
+
+use alloc::string::ToString;
+use alloc::format;
+use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::vec;
+
 use spin::Mutex;
-use ups::{println, print};
+use crate::{println, print};
 use core::{fmt};
 
 pub struct DirEntry {
@@ -99,8 +106,17 @@ impl DirEntry{
         ((self.first_cluster_high as u32) << 16) | (self.first_cluster_low as u32)
     }
 
-    pub fn get_name(&self) -> Result<&str, core::str::Utf8Error> {
-        core::str::from_utf8(&self.name)
+    pub fn get_name(&self) -> Result<String, core::str::Utf8Error> {
+        let (name_bytes, ext_bytes) = self.name.split_at(8);
+
+        let name_str = core::str::from_utf8(name_bytes)?.trim_end();
+        let ext_str = core::str::from_utf8(ext_bytes)?.trim_end();
+
+        if ext_str.is_empty() {
+            Ok(name_str.to_string())
+        } else {
+            Ok(format!("{}.{}", name_str, ext_str))
+        }
     }
 
     pub fn is_directory(&self) -> bool {
@@ -348,6 +364,32 @@ impl<'a, D: BlockDevice> FileSystem<'a, D> {
         }
     }
 
+    pub fn return_tree(&mut self, cluster_idx: u32, depth: usize) -> String{
+        let entries = self.read_dir_entries(cluster_idx as usize);
+
+        let mut out = String::new();
+
+        for entry in entries {
+            for _ in 0..depth {
+                out.push_str("\\ ");
+            }
+
+            if entry.is_directory() {
+                let _ = writeln!(out, "* {}", entry.get_name().unwrap().trim_end());
+                let name = entry.get_name().unwrap();
+
+                if name != "." && name != ".." {
+                    let subtree = self.return_tree(entry.first_cluster(), depth + 1);
+                    out.push_str(&subtree);
+                }
+
+            } else {
+                let _ = writeln!(out, "* {}", entry.get_name().unwrap());
+            }        
+        }
+        out
+    }
+
     pub fn print_tree(&mut self, cluster_idx: u32, depth: usize) {
         let entries = self.read_dir_entries(cluster_idx as usize);
 
@@ -437,6 +479,20 @@ impl<'a, D: BlockDevice> FileSystem<'a, D> {
         self.write_fat_entry(root_cluster as u32, 0x0FFF_FFFFu32);
 
         Ok(())
+    }
+
+    pub fn find_dir_in(&mut self, cluster: u32, name: &str) -> Option<u32> {
+        let entries = self.read_dir_entries(cluster as usize);
+        for entry in entries {
+            if entry.is_directory() {
+                if let Ok(entry_name) = entry.get_name() {
+                    if entry_name.trim_end() == name {
+                        return Some(entry.first_cluster());
+                    }
+                }
+            }
+        }
+        None
     }
 
     pub fn read_dir_entries(&mut self, cluster_idx: usize) -> Vec<DirEntry> {
