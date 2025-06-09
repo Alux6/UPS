@@ -8,6 +8,7 @@
 extern crate alloc;
 
 use ups::fs::fat32::{BLOCK_DEVICE, FileSystem};
+use ups::vga_buffer::disable_hardware_cursor;
 use ups::shell;
 use ups::interrupts;
 
@@ -72,14 +73,15 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         println!("Occupied clusters: {}", occupied);
     }
 
+    disable_hardware_cursor();
+
+
     shell::init();
 
     interrupts::unmask_irq1();
 
     #[cfg(test)]
     test_main();
-
-    println!("It didn't crash!");
 
     ups::hlt_loop();
 }

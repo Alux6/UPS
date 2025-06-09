@@ -228,10 +228,8 @@ impl<'a, D: BlockDevice> FileSystem<'a, D> {
 
         let fat_slice = &disk_bytes[fat_start_byte .. fat_start_byte + fat_bytes_len];
 
-        // 5) Iterate over each 4-byte entry and count nonzero values:
         let mut count = 0;
         for idx in (0 .. fat_slice.len()).step_by(4) {
-            // Read one u32 in little-endian:
             let entry = u32::from_le_bytes(
                 fat_slice[idx .. idx + 4]
                     .try_into()
@@ -277,6 +275,8 @@ impl<'a, D: BlockDevice> FileSystem<'a, D> {
             0 => self.ebr.fat_size_32 as usize,
             n => n as usize,
         };
+    
+        
 
         let fat_bytes_len = fat_size_sectors * bytes_per_sector;
         let data: &mut [u8] = self.device.raw_data_mut();
@@ -645,7 +645,7 @@ impl RamDisk {
         data[14..16].copy_from_slice(&reserved_sectors.to_le_bytes());
         data[16] = fat_count;
         data[17..19].copy_from_slice(&0u16.to_le_bytes()); // root entries
-        //
+
         data[19..21].copy_from_slice(&(if size_in_sectors < 65536 {
             size_in_sectors as u16} else {0}).to_le_bytes());
 
@@ -668,8 +668,6 @@ impl RamDisk {
         data[44..48].copy_from_slice(&root_cluster.to_le_bytes());
         data[48..50].copy_from_slice(&fs_info_sector.to_le_bytes());
         data[50..52].copy_from_slice(&backup_boot_sector.to_le_bytes());
-
-        // Reserved (12 bytes): zeroed
 
         // Drive/boot fields
         data[64] = 0x80;
@@ -776,7 +774,6 @@ impl fmt::Display for DirEntry {
 
 impl fmt::Display for BiosParameterBlock {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Convert OEM name bytes to string safely
         let oem_str = core::str::from_utf8(&self._oem)
             .unwrap_or("<invalid utf8>");
 

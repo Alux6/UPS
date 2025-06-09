@@ -33,7 +33,7 @@ pub fn mask_irq1() {
     unsafe {
         let mut port = x86_64::instructions::port::Port::new(0x21);
         let mask: u8 = port.read();
-        port.write(mask | 0x02); // Set bit 1 to mask IRQ1 (keyboard)
+        port.write(mask | 0x02);
     }
 }
 
@@ -41,7 +41,7 @@ pub fn unmask_irq1() {
     unsafe {
         let mut port = x86_64::instructions::port::Port::new(0x21);
         let mask: u8 = port.read();
-        port.write(mask & !0x02); // Clear bit 1 to unmask IRQ1
+        port.write(mask & !0x02);
     }
 }
 
@@ -100,7 +100,6 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(
             layouts::Us104Key, HandleControl::Ignore)
         );
     }
-
 
     let mut port = Port::new(0x60);
     let mut keyboard = KEYBOARD.lock();

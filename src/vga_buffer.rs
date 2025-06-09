@@ -20,6 +20,18 @@ pub enum Color {
     White = 15,
 }
 
+use x86_64::instructions::port::Port;
+
+pub fn disable_hardware_cursor() {
+    unsafe {
+        let mut index_port: Port<u8> = Port::new(0x3D4);
+        let mut data_port:  Port<u8> = Port::new(0x3D5);
+
+        index_port.write(0x0A);
+        data_port.write(0x20);
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
 struct ColorCode(u8);
@@ -160,9 +172,9 @@ macro_rules! println {
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
     use core::fmt::Write;
-    use x86_64::instructions::interrupts;   // new
+    use x86_64::instructions::interrupts;
 
-    interrupts::without_interrupts(|| {     // new
+    interrupts::without_interrupts(|| {
         WRITER.lock().write_fmt(args).unwrap();
     });
 }
