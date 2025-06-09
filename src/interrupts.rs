@@ -1,3 +1,11 @@
+use core::fmt::Write;
+use crate::serial_println;
+use crate::debug::{self, SavedScreenWriter};
+
+use crate::debug::restore_screen_buffer;
+use crate::DEBUG_MODE;
+use core::sync::atomic::Ordering::SeqCst;
+
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 use crate::println;
 use crate::print;
@@ -109,17 +117,31 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(
         if let Some(decoded) = keyboard.process_keyevent(key_event) {
             if let DecodedKey::Unicode(character) = decoded {
                 let byte = character as u8; 
-                let mut term = TERMINAL.lock();
-                if character == '\u{8}' {
-                    term.pop_char();
-                    WRITER.lock().delete_byte();
-                }
-                else{
-                    let mut result: String = term.push_char(byte);
-                    if character == '\n' || character == '\r' {
-                        result = term.execute_command();
+                if DEBUG_MODE.load(SeqCst){
+                    if character == 'q' {
+                        DEBUG_MODE.store(false, SeqCst);
+                        restore_screen_buffer();
                     }
-                    print!("{}", result);
+
+                }
+                else {
+                    let mut term = TERMINAL.lock();
+                    if character == '\u{8}' {
+                        term.pop_char();
+                        WRITER.lock().delete_byte();
+                    }
+                    else{
+                        let mut result: String = term.push_char(byte);
+                        if character == '\n' || character == '\r' {
+                            result = term.execute_command();
+                        }
+                        if DEBUG_MODE.load(SeqCst) {
+                            let mut writer = SavedScreenWriter;
+                            write!(writer, "{}", result).unwrap();
+                        } else {
+                            print!("{}", result);
+                        }
+                    }
                 }
             }
         }
@@ -148,7 +170,9 @@ pub fn init_idt() {
 extern "x86-interrupt" fn breakpoint_handler(
     stack_frame: InterruptStackFrame)
 {
-    println!("EXCEPTION: BREAKPOINT\n{:#?}", stack_frame);
+    debug::trigger_debug();
+
+    return;
 }
 
 extern "x86-interrupt" fn double_fault_handler(
@@ -156,4 +180,3 @@ extern "x86-interrupt" fn double_fault_handler(
 {
     panic!("EXCEPTION: DOUBLE FAULT\n{:#?}", stack_frame);
 }
-

@@ -21,7 +21,7 @@ pub mod vga_buffer;
 
 pub mod fs;
 pub mod shell;
-
+pub mod debug;
 pub mod gdt;
 
 pub mod interrupts;
@@ -33,6 +33,10 @@ use bootloader::{entry_point, BootInfo};
 
 #[cfg(test)]
 entry_point!(test_kernel_main);
+
+
+use core::sync::atomic::{AtomicBool};
+pub static DEBUG_MODE: AtomicBool = AtomicBool::new(false);
 
 pub fn init() {
     gdt::init();

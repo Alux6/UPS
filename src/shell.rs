@@ -2,6 +2,7 @@ use crate::fs::fat32::{BLOCK_DEVICE, FileSystem};
 
 use spin::Mutex;
 use lazy_static::lazy_static;
+use crate::debug;
 use crate::println;
 
 use core::fmt::Write;
@@ -63,11 +64,18 @@ impl Terminal {
                         .expect("failed to mount FS");
                     out.push_str(&fs.return_tree(self.cwd, 0));
                 }
+                "touch" => {
+                    let mut dev = BLOCK_DEVICE.lock();
+                    let mut fs = FileSystem::new(&mut *dev)
+                        .expect("failed to mount FS");
+                    if let Some(name) = arg {
+                        let _ = fs.create_file(2, name);
+                    }
+                }
                 "cd" => {
                     let mut dev = BLOCK_DEVICE.lock();
                     let mut fs = FileSystem::new(&mut *dev)
                         .expect("failed to mount FS");
-
                     if let Some(name) = arg {
 
                         if let Some(cluster) = fs.find_dir_in(self.cwd, name) {
@@ -82,6 +90,11 @@ impl Terminal {
                     } else {
                         let _ = writeln!(out, "Usage: cd <dirname>");
                     }
+                }
+
+                "bk" => {
+                    debug::debug_log("Test 1");
+                    let _ = write!(out,"");
                 }
 
                 "clear" => {
