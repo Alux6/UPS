@@ -1,5 +1,10 @@
 use lazy_static::lazy_static;
+
+use core::sync::atomic::Ordering::SeqCst;
+
 use crate::{str_to_fat_name};
+
+use crate::debug::{debug_log, DEBUG_FS};
 
 use core::fmt::Write;
 
@@ -271,12 +276,17 @@ impl<'a, D: BlockDevice> FileSystem<'a, D> {
         let reserved = self.bpb.reserved_sectors as usize;
         let bytes_per_sector = self.bpb.bytes_per_sector as usize;
 
+        if DEBUG_FS.load(SeqCst) {
+            let log = format!("Trying to find a free cluster");
+            debug_log(&log);
+        }
+
         let fat_size_sectors = match self.bpb.fat_size_16 {
             0 => self.ebr.fat_size_32 as usize,
             n => n as usize,
         };
-    
-        
+
+
 
         let fat_bytes_len = fat_size_sectors * bytes_per_sector;
         let data: &mut [u8] = self.device.raw_data_mut();
@@ -292,6 +302,12 @@ impl<'a, D: BlockDevice> FileSystem<'a, D> {
             );
             if entry == 0 {
                 fat_entry.copy_from_slice(&0x0FFF_FFF8u32.to_le_bytes());
+
+                if DEBUG_FS.load(SeqCst) {
+                    let log = format!("Free cluster found at {}", cluster_idx);
+                    debug_log(&log);
+                }
+
                 return Some(cluster_idx as u32);
             }
         }
@@ -344,6 +360,10 @@ impl<'a, D: BlockDevice> FileSystem<'a, D> {
         let sectors_per_cluster = self.bpb.sectors_per_cluster as usize;
         let fat_table_count = self.bpb.fat_table_count as usize;
 
+        if DEBUG_FS.load(SeqCst) {
+            let log = format!("Trying to empty the cluster: {}",cluster_idx);
+            debug_log(&log);
+        }
         let fat_size_sectors = match self.bpb.fat_size_16 {
             0 => self.ebr.fat_size_32 as usize,
             n => n as usize,
@@ -451,6 +471,11 @@ impl<'a, D: BlockDevice> FileSystem<'a, D> {
 
         let entry: DirEntry = DirEntry::new(str_to_fat_name(filename), cluster, 0x10);
 
+        if DEBUG_FS.load(SeqCst) {
+            let log = format!("Trying to create directory: {} in cluster {} with parent cluster {}", filename, cluster, parent_dir_cluster);
+            debug_log(&log);
+        }
+
         self.zero_cluster_data(cluster as usize);
 
 
@@ -461,6 +486,10 @@ impl<'a, D: BlockDevice> FileSystem<'a, D> {
         self.allocate_dir_entry(dot2, cluster as usize).unwrap();
 
         self.allocate_dir_entry(entry, parent_dir_cluster as usize);
+        if DEBUG_FS.load(SeqCst) {
+            let log = format!("Directory {}/ successfuly created in cluster {} with parent cluster {}", filename, cluster, parent_dir_cluster);
+            debug_log(&log);
+        }
         Ok(())
     }
 
@@ -543,12 +572,20 @@ impl<'a, D: BlockDevice> FileSystem<'a, D> {
     pub fn create_file(&mut self, parent_dir_cluster: u32, filename: &str) -> Result<(), ()> {
         // Allocate cluster(s) for file
         let cluster = self.allocate_cluster().unwrap();
+
+        if DEBUG_FS.load(SeqCst) {
+            let log = format!("Trying to create file {} in cluster {} with parent cluster {}", filename, cluster, parent_dir_cluster);
+            debug_log(&log);
+        }
         let entry: DirEntry = DirEntry::new(str_to_fat_name(filename), cluster, 0x20);
         // Create directory entry in parent_dir_cluster
         self.zero_cluster_data(cluster as usize);
 
         self.allocate_dir_entry(entry, parent_dir_cluster as usize);
-        // Initialize file entry fields
+        if DEBUG_FS.load(SeqCst) {
+            let log = format!("Directory {}/ successfuly created in cluster {} with parent cluster {}", filename, cluster, parent_dir_cluster);
+            debug_log(&log);
+        }
         Ok(())
     }
 

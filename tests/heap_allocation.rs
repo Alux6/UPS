@@ -8,7 +8,6 @@ extern crate alloc;
 
 use bootloader::{entry_point, BootInfo};
 
-use ups::allocator::HEAP_SIZE;
 use alloc::{boxed::Box, vec::Vec};
 use core::panic::PanicInfo;
 
@@ -59,7 +58,7 @@ fn large_vec() {
 
 #[test_case]
 fn many_boxes() {
-    for i in 0..HEAP_SIZE {
+    for i in 0..100000 {
         let x = Box::new(i);
         assert_eq!(*x, i);
     }

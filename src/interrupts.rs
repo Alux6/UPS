@@ -1,9 +1,7 @@
 use core::fmt::Write;
-use crate::serial_println;
-use crate::debug::{self, SavedScreenWriter};
 
-use crate::debug::restore_screen_buffer;
 use crate::DEBUG_MODE;
+use crate::shell::EXECUTE_COMMAND;
 use core::sync::atomic::Ordering::SeqCst;
 
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
@@ -35,6 +33,22 @@ spin::Mutex::new(unsafe { ChainedPics::new(PIC_1_OFFSET, PIC_2_OFFSET) });
 pub enum InterruptIndex {
     Timer = PIC_1_OFFSET,
     Keyboard,
+}
+
+pub fn mask_irq0() {
+    unsafe {
+        let mut port = x86_64::instructions::port::Port::new(0x21);
+        let mask: u8 = port.read();
+        port.write(mask | 0x01);
+    }
+}
+
+pub fn unmask_irq0() {
+    unsafe {
+        let mut port = x86_64::instructions::port::Port::new(0x21);
+        let mask: u8 = port.read();
+        port.write(mask & !0x01);
+    }
 }
 
 pub fn mask_irq1() {
@@ -120,9 +134,7 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(
                 if DEBUG_MODE.load(SeqCst){
                     if character == 'q' {
                         DEBUG_MODE.store(false, SeqCst);
-                        restore_screen_buffer();
                     }
-
                 }
                 else {
                     let mut term = TERMINAL.lock();
@@ -133,14 +145,9 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(
                     else{
                         let mut result: String = term.push_char(byte);
                         if character == '\n' || character == '\r' {
-                            result = term.execute_command();
+                            EXECUTE_COMMAND.store(true, SeqCst);
                         }
-                        if DEBUG_MODE.load(SeqCst) {
-                            let mut writer = SavedScreenWriter;
-                            write!(writer, "{}", result).unwrap();
-                        } else {
                             print!("{}", result);
-                        }
                     }
                 }
             }
@@ -156,6 +163,7 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(
 extern "x86-interrupt" fn timer_interrupt_handler(
     _stack_frame: InterruptStackFrame)
 {    
+
     unsafe {
         PICS.lock()
             .notify_end_of_interrupt(InterruptIndex::Timer.as_u8());
@@ -170,8 +178,6 @@ pub fn init_idt() {
 extern "x86-interrupt" fn breakpoint_handler(
     stack_frame: InterruptStackFrame)
 {
-    debug::trigger_debug();
-
     return;
 }
 

@@ -1,9 +1,17 @@
-use crate::fs::fat32::{BLOCK_DEVICE, FileSystem};
+use crate::{fs::fat32::{FileSystem, BLOCK_DEVICE}, print};
+
+use x86_64::structures::paging::{OffsetPageTable, FrameAllocator, Size4KiB};
+
+use core::sync::atomic::Ordering::SeqCst;
 
 use spin::Mutex;
+use crate::AtomicBool;
 use lazy_static::lazy_static;
 use crate::debug;
+use debug::DEBUG_FS;
 use crate::println;
+
+pub static EXECUTE_COMMAND: AtomicBool = AtomicBool::new(false);
 
 use core::fmt::Write;
 
@@ -54,7 +62,7 @@ impl Terminal {
             let mut parts = trimmed.split_whitespace();
 
             let command = parts.next().unwrap_or("");
-            let arg = parts.next();
+            let arg = parts.next().unwrap_or("");
 
             match command {
 
@@ -64,27 +72,61 @@ impl Terminal {
                         .expect("failed to mount FS");
                     out.push_str(&fs.return_tree(self.cwd, 0));
                 }
+                "mkdir" => {
+                    let mut dev = BLOCK_DEVICE.lock();
+                    let mut fs = FileSystem::new(&mut *dev)
+                        .expect("failed to mount FS");
+                    if arg != "" {
+                        let _ = fs.create_dir(self.cwd, arg);
+                    }
+                }
+                "help" => {
+                    let _ = writeln!(out, "\
+Available commands:
+
+ls
+List the contents of the current directory.
+
+mkdir <name>
+Create a new directory with the given <name> in the current directory.
+
+touch <name>
+Create a new empty file with the given <name> in the current directory.
+
+cd <dirname>
+Change the current directory to <dirname>.
+
+bk <component>
+Toggle FileSystem debugging on or off.
+
+clear
+Clear the screen by printing empty lines.
+
+help
+Show this help message.");
+                }
+
                 "touch" => {
                     let mut dev = BLOCK_DEVICE.lock();
                     let mut fs = FileSystem::new(&mut *dev)
                         .expect("failed to mount FS");
-                    if let Some(name) = arg {
-                        let _ = fs.create_file(2, name);
+                    if arg != "" {
+                        let _ = fs.create_file(self.cwd, arg);
                     }
                 }
                 "cd" => {
                     let mut dev = BLOCK_DEVICE.lock();
                     let mut fs = FileSystem::new(&mut *dev)
                         .expect("failed to mount FS");
-                    if let Some(name) = arg {
+                    if arg != "" {
 
-                        if let Some(cluster) = fs.find_dir_in(self.cwd, name) {
+                        if let Some(cluster) = fs.find_dir_in(self.cwd, arg) {
                             self.cwd = cluster;
-                            let _ = writeln!(out, "Changed directory to {}", name);
+                            let _ = writeln!(out, "Changed directory to {}", arg);
                         } 
 
                         else {
-                            let _ = writeln!(out, "Directory '{}' not found", name);
+                            let _ = writeln!(out, "Directory '{}' not found", arg);
                         }
 
                     } else {
@@ -93,7 +135,31 @@ impl Terminal {
                 }
 
                 "bk" => {
-                    debug::debug_log("Test 1");
+
+                    match arg {
+                        "fs" => {
+                            let val = DEBUG_FS.load(SeqCst);
+                            DEBUG_FS.store(!val, SeqCst);
+
+                            if DEBUG_FS.load(SeqCst) {
+                                let _ = writeln!(out, "FileSystem debugging activated");
+                            }
+                            else{
+                                let _ = writeln!(out, "FileSystem debugging deactivated");
+                            }
+                        }
+                        "help" => {
+
+                    let _ = writeln!(out, "\
+Available components:
+
+fs
+File system.");
+                        }
+                        "" => {}
+                        _ => {}
+                    }
+
                     let _ = write!(out,"");
                 }
 

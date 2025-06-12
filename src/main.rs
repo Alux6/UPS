@@ -75,7 +75,6 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
 
     disable_hardware_cursor();
 
-
     shell::init();
 
     interrupts::unmask_irq1();

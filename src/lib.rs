@@ -7,6 +7,9 @@
 #![test_runner(crate::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
+use crate::shell::TERMINAL;
+use core::fmt::Write;
+
 use core::panic::PanicInfo;
 use alloc::vec::Vec;
 use crate::serial::Green;
@@ -17,7 +20,6 @@ extern crate alloc;
 pub mod allocator;
 pub mod serial;
 pub mod vga_buffer;
-
 
 pub mod fs;
 pub mod shell;
@@ -34,6 +36,7 @@ use bootloader::{entry_point, BootInfo};
 #[cfg(test)]
 entry_point!(test_kernel_main);
 
+use core::sync::atomic::Ordering::SeqCst;
 
 use core::sync::atomic::{AtomicBool};
 pub static DEBUG_MODE: AtomicBool = AtomicBool::new(false);
@@ -48,6 +51,12 @@ pub fn init() {
 pub fn hlt_loop() -> ! {
     loop {
         x86_64::instructions::hlt();
+        if shell::EXECUTE_COMMAND.load(SeqCst){
+            let mut term = TERMINAL.lock();
+            let result = term.execute_command();
+                print!("{}", result);
+            shell::EXECUTE_COMMAND.store(false, SeqCst);
+        }
     }
 }
 
